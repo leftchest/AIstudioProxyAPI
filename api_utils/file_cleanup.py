@@ -9,8 +9,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from config.constants import UPLOAD_FILE_RETENTION_DAYS, FILE_CLEANUP_INTERVAL_HOURS
-
-logger = logging.getLogger(__name__)
+from server import logger
 
 class FileCleanupService:
     """文件清理服务"""
@@ -65,10 +64,10 @@ class FileCleanupService:
         if self.is_running:
             logger.warning("文件清理服务已在运行")
             return
-        
+
         self.is_running = True
         self.cleanup_task = asyncio.create_task(self._cleanup_loop())
-        
+
         next_cleanup = self.get_next_cleanup_time()
         logger.info(f"文件清理服务已启动")
         logger.info(f"清理间隔: {FILE_CLEANUP_INTERVAL_HOURS}小时")
@@ -79,7 +78,7 @@ class FileCleanupService:
         """停止清理服务"""
         if not self.is_running:
             return
-        
+
         self.is_running = False
         if self.cleanup_task and not self.cleanup_task.done():
             self.cleanup_task.cancel()
@@ -87,7 +86,7 @@ class FileCleanupService:
                 await self.cleanup_task
             except asyncio.CancelledError:
                 pass
-        
+
         logger.info("文件清理服务已停止")
     
     async def _cleanup_loop(self):

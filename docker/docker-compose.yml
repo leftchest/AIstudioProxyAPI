@@ -9,6 +9,9 @@ services:
     ports:
       - "${HOST_FASTAPI_PORT:-2048}:${DEFAULT_FASTAPI_PORT:-2048}"
       - "${HOST_STREAM_PORT:-3120}:${STREAM_PORT:-3120}"
+    env_file:
+      # 加载环境变量文件
+      - .env
     volumes:
       # 挂载认证文件目录 (必需)
       - ../auth_profiles:/app/auth_profiles
@@ -38,7 +41,7 @@ services:
       
       # 文件清理功能
       - ../api_utils/file_cleanup.py:/app/api_utils/file_cleanup.py:ro
-      - ../api_utils/app.py:/app/api_utils/app.py:ro
+      - ../api_utils/app.py:/app/api_utils/app.py:ro  
       
     environment:
       # 这些环境变量会覆盖 .env 文件中的设置
