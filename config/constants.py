@@ -25,6 +25,14 @@ ENABLE_THINKING_BUDGET = os.environ.get('ENABLE_THINKING_BUDGET', 'false').lower
 DEFAULT_THINKING_BUDGET = int(os.environ.get('DEFAULT_THINKING_BUDGET', '8192'))
 ENABLE_GOOGLE_SEARCH = os.environ.get('ENABLE_GOOGLE_SEARCH', 'false').lower() in ('true', '1', 'yes')
 
+# --- 文件清理配置 ---
+# 上传文件保留天数
+UPLOAD_FILE_RETENTION_DAYS = int(os.environ.get('UPLOAD_FILE_RETENTION_DAYS', '7'))
+# 文件清理检查间隔（小时）
+FILE_CLEANUP_INTERVAL_HOURS = int(os.environ.get('FILE_CLEANUP_INTERVAL_HOURS', '24'))
+# 是否在响应中显示思考过程内容 (<think></think> 标签及其内容)
+SHOW_THINKING_PROCESS = os.environ.get('SHOW_THINKING_PROCESS', 'false').lower() in ('true', '1', 'yes')
+
 # 默认停止序列 - 支持 JSON 格式配置
 try:
     DEFAULT_STOP_SEQUENCES = json.loads(os.environ.get('DEFAULT_STOP_SEQUENCES', '["用户:"]'))

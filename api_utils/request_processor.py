@@ -36,6 +36,7 @@ from .utils import (
     use_stream_response,
     calculate_usage_stats
 )
+from config.constants import SHOW_THINKING_PROCESS
 from browser_utils.page_controller import PageController
 
 
@@ -358,7 +359,7 @@ async def _handle_auxiliary_stream_response(req_id: str, request: ChatCompletion
                             full_body_content = body
                         
                         # 处理推理内容
-                        if len(reason) > last_reason_pos:
+                        if len(reason) > last_reason_pos and SHOW_THINKING_PROCESS:
                             output = {
                                 "id": chat_completion_id,
                                 "object": "chat.completion.chunk",
@@ -604,7 +605,7 @@ async def _handle_auxiliary_stream_response(req_id: str, request: ChatCompletion
             finish_reason_val = "tool_calls"
             message_payload["content"] = None
         
-        if reasoning_content:
+        if reasoning_content and SHOW_THINKING_PROCESS:
             message_payload["reasoning_content"] = reasoning_content
 
         # 计算token使用统计

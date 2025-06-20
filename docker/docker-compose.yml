@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: ai-studio-proxy-container
+    container_name: ai-studio-proxy-365
     mem_limit: ${DOCKER_MEMORY_LIMIT:-0}
     memswap_limit: ${DOCKER_MEMSWAP_LIMIT:-0}
     ports:
@@ -24,6 +24,22 @@ services:
       # 如果您有自定义的油猴脚本或模型配置，可以取消注释以下行
       # - ../browser_utils/custom_scripts:/app/browser_utils/custom_scripts:ro
       # - ../browser_utils/model_configs.json:/app/browser_utils/model_configs.json:ro
+
+      # 挂载修改的文件 文件上传优化
+      - ../browser_utils/page_controller.py:/app/browser_utils/page_controller.py:ro
+      # 挂载修改的文件 + 初始化修复
+      - ../browser_utils/initialization.py:/app/browser_utils/initialization.py:ro
+      
+      # 思考过程 + 文件清理功能
+      - ../config/constants.py:/app/config/constants.py:ro
+      
+      # 思考过程控制功能
+      - ../api_utils/request_processor.py:/app/api_utils/request_processor.py:ro      
+      
+      # 文件清理功能
+      - ../api_utils/file_cleanup.py:/app/api_utils/file_cleanup.py:ro
+      - ../api_utils/app.py:/app/api_utils/app.py:ro
+      
     environment:
       # 这些环境变量会覆盖 .env 文件中的设置
       # 如果您想使用 .env 文件，可以注释掉这些行
