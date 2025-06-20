@@ -657,34 +657,7 @@ class PageController:
 
             # 上传
             if len(image_list) > 0:
-                try:
-                    # 1. 监听文件选择器
-                    #    page.expect_file_chooser() 会返回一个上下文管理器
-                    #    当文件选择器出现时，它会得到 FileChooser 对象
-                    function_btn_localtor = self.page.locator('button[aria-label="Insert assets such as images, videos, files, or audio"]')
-                    await function_btn_localtor.click()
-                    #asyncio.sleep(0.5)
-                    async with self.page.expect_file_chooser() as fc_info:
-                        # 2. 点击那个会触发文件选择的普通按钮
-                        upload_btn_localtor = self.page.locator(UPLOAD_BUTTON_SELECTOR)
-                        await upload_btn_localtor.click()
-                        print("点击了 JS 上传按钮，等待文件选择器...")
-
-                    # 3. 获取文件选择器对象
-                    file_chooser = await fc_info.value
-                    print("文件选择器已出现。")
-
-                    # 4. 设置要上传的文件
-                    await file_chooser.set_files(image_list)
-                    print(f"已将 '{image_list}' 设置到文件选择器。")
-
-                    #asyncio.sleep(0.2)
-                    acknow_btn_locator = self.page.locator('button[aria-label="Agree to the copyright acknowledgement"]')
-                    if await acknow_btn_locator.count() > 0:
-                        await acknow_btn_locator.click()
-
-                except Exception as e:
-                    print(f"在上传文件时发生错误: {e}")
+                await self._upload_files_with_diagnostics(image_list, check_client_disconnected)
 
             # 等待发送按钮启用
             wait_timeout_ms_submit_enabled = 100000
@@ -876,3 +849,517 @@ class PageController:
             if not isinstance(e, ClientDisconnectedError):
                 await save_error_snapshot(f"get_response_error_{self.req_id}")
             raise
+
+    async def _upload_files_with_diagnostics(self, image_list, check_client_disconnected):
+        """带诊断信息的文件上传函数"""
+        self.logger.info(f"[{self.req_id}] 开始文件上传诊断，文件数量: {len(image_list)}")
+
+        try:
+            # 1. 诊断页面状态
+            await self._diagnose_upload_capability()
+
+            # 2. 查找并点击功能按钮
+            function_btn_found = await self._find_and_click_function_button()
+            if not function_btn_found:
+                self.logger.error(f"[{self.req_id}] ❌ 无法找到功能按钮，可能此账号不支持文件上传")
+                return
+
+            # 3. 尝试多种上传方式
+            upload_success = await self._try_multiple_upload_methods(image_list)
+
+            if upload_success:
+                self.logger.info(f"[{self.req_id}] ✅ 文件上传成功")
+                # 4. 处理版权确认
+                await self._handle_copyright_acknowledgement()
+            else:
+                self.logger.error(f"[{self.req_id}] ❌ 所有上传方法都失败")
+
+        except Exception as e:
+            self.logger.error(f"[{self.req_id}] ❌ 文件上传过程中发生错误: {e}")
+            # 不抛出异常，让流程继续，只是没有文件上传
+
+    async def _diagnose_upload_capability(self):
+        """诊断当前页面的上传能力"""
+        self.logger.info(f"[{self.req_id}] 开始诊断页面上传能力...")
+
+        # 检查AI Studio的上传相关元素
+        selectors_to_check = [
+            # AI Studio主要的附件按钮（⊕ 按钮）
+            ('AI Studio插入按钮', 'button[aria-label="Insert assets such as images, videos, files, or audio"]'),
+
+            # 文件输入元素（最重要的）
+            ('文件输入', 'input[type="file"]'),
+            ('图片输入', 'input[accept*="image"]'),
+
+            # AI Studio菜单中的选项（点击附件按钮后出现）
+            ('Upload File菜单项', 'div[role="menuitem"]:has-text("Upload File")'),
+            ('My Drive菜单项', 'div[role="menuitem"]:has-text("My Drive")'),
+            ('Camera菜单项', 'div[role="menuitem"]:has-text("Camera")'),
+            ('Sample Media菜单项', 'div[role="menuitem"]:has-text("Sample Media")'),
+
+            # 备用选择器
+            ('上传按钮', 'button[aria-label="Upload File"]'),
+            ('附件按钮', 'button[aria-label="Attach files"]')
+        ]
+
+        found_elements = []
+        detailed_info = []
+
+        for name, selector in selectors_to_check:
+            try:
+                locator = self.page.locator(selector)
+                count = await locator.count()
+                if count > 0:
+                    found_elements.append(f"{name}: {selector} (count: {count})")
+
+                    # 获取第一个元素的详细信息
+                    try:
+                        first_element = locator.first
+                        is_visible = await first_element.is_visible()
+                        is_enabled = await first_element.is_enabled()
+
+                        # 获取元素的文本内容
+                        text_content = ""
+                        try:
+                            text_content = await first_element.text_content() or ""
+                            text_content = text_content.strip()[:50]  # 限制长度
+                        except Exception:
+                            pass
+
+                        detailed_info.append(f"  {name}: visible={is_visible}, enabled={is_enabled}, text='{text_content}'")
+                    except Exception:
+                        pass
+
+            except Exception:
+                pass
+
+        if found_elements:
+            self.logger.info(f"[{self.req_id}] 找到的上传相关元素:")
+            for element in found_elements:
+                self.logger.info(f"[{self.req_id}]   {element}")
+
+            if detailed_info:
+                self.logger.info(f"[{self.req_id}] 元素详细状态:")
+                for info in detailed_info:
+                    self.logger.info(f"[{self.req_id}] {info}")
+        else:
+            self.logger.warning(f"[{self.req_id}] ⚠️ 未找到任何上传相关元素，此账号可能不支持文件上传")
+
+        # 检查页面URL和标题
+        try:
+            current_url = self.page.url
+            page_title = await self.page.title()
+            self.logger.info(f"[{self.req_id}] 页面信息 - URL: {current_url}")
+            self.logger.info(f"[{self.req_id}] 页面信息 - Title: {page_title}")
+        except Exception:
+            pass
+
+        # AI Studio对所有账号提供统一的功能，无需检查账号限制
+
+
+
+    async def _find_and_click_function_button(self):
+        """查找并点击功能按钮 - 针对AI Studio优化"""
+        # 针对AI Studio的功能按钮选择器（基于实际界面）
+        function_button_selectors = [
+            # AI Studio主要的附件按钮（⊕ 按钮）
+            'button[aria-label="Insert assets such as images, videos, files, or audio"]',
+            'button[aria-label="Add content"]',
+            'button[aria-label="Insert content"]',
+            'button[title="Insert assets such as images, videos, files, or audio"]',
+
+            # 可能的其他变体
+            'button[aria-label="Attach files"]',
+            'button[aria-label="Upload files"]',
+            'button[aria-label="Add files"]',
+            'button[title="Insert assets"]',
+            'button[data-testid="attach-button"]',
+            'button[data-testid="file-upload-button"]',
+
+            # 通用选择器
+            'button[aria-label="Add media"]',
+            'button[title="Attach"]'
+        ]
+
+        for selector in function_button_selectors:
+            try:
+                locator = self.page.locator(selector)
+                count = await locator.count()
+                if count > 0:
+                    # 检查按钮状态
+                    first_btn = locator.first
+                    is_visible = await first_btn.is_visible()
+                    is_enabled = await first_btn.is_enabled()
+
+                    self.logger.info(f"[{self.req_id}] 找到功能按钮: {selector} (visible: {is_visible}, enabled: {is_enabled})")
+
+                    if is_enabled:
+                        await first_btn.click()
+                        self.logger.info(f"[{self.req_id}] ✅ 成功点击功能按钮")
+                        await asyncio.sleep(0.5)  # 等待菜单展开，AI Studio通常响应较快
+                        return True
+                    else:
+                        self.logger.warning(f"[{self.req_id}] 功能按钮不可用: {selector}")
+
+            except Exception as e:
+                self.logger.debug(f"[{self.req_id}] 尝试点击 {selector} 失败: {e}")
+
+        self.logger.error(f"[{self.req_id}] ❌ 无法找到任何可用的功能按钮")
+        return False
+
+    async def _try_multiple_upload_methods(self, image_list):
+        """尝试多种上传方法，按可靠性排序"""
+        self.logger.info(f"[{self.req_id}] 尝试多种上传方法...")
+
+        # 方法1: 直接查找input[type="file"] - 最可靠的方法
+        self.logger.info(f"[{self.req_id}] === 尝试方法1: 直接文件输入 ===")
+        if await self._try_direct_file_input(image_list):
+            return True
+
+        # 方法2: 标准的文件选择器方法
+        self.logger.info(f"[{self.req_id}] === 尝试方法2: 标准文件选择器 ===")
+        if await self._try_standard_file_chooser(image_list):
+            return True
+
+        # 方法3: 拖拽上传
+        self.logger.info(f"[{self.req_id}] === 尝试方法3: 拖拽上传 ===")
+        if await self._try_drag_drop_upload(image_list):
+            return True
+
+        self.logger.error(f"[{self.req_id}] ❌ 所有上传方法都失败了")
+        return False
+
+    async def _try_standard_file_chooser(self, image_list):
+        """标准文件选择器方法"""
+        self.logger.info(f"[{self.req_id}] 尝试标准文件选择器方法...")
+
+        # 针对AI Studio的上传按钮选择器（基于实际界面）
+        upload_button_selectors = [
+            # AI Studio菜单中的"Upload File"选项
+            'div[role="menuitem"]:has-text("Upload File")',
+            'button[role="menuitem"]:has-text("Upload File")',
+            'mat-menu-item:has-text("Upload File")',
+            '[aria-label*="Upload File"]',
+
+            # 原有的主要选择器
+            UPLOAD_BUTTON_SELECTOR,  # 'button[aria-label="Upload File"]'
+
+            # 其他可能的选择器
+            'button[aria-label="Upload from computer"]',
+            'button[aria-label="Upload files"]',
+            'button[aria-label="Choose files"]',
+            'button[aria-label="Browse files"]',
+
+            # 通用菜单项选择器
+            'div[role="menuitem"]:has-text("Upload")',
+            'button[role="menuitem"]:has-text("Upload")',
+            'mat-menu-item:has-text("Upload")',
+
+            # 通用按钮选择器
+            'button[aria-label="Upload"]',
+            'button[title="Upload File"]',
+            'button:has-text("Upload File")',
+            'button:has-text("Upload")',
+            '[data-testid="upload-button"]',
+            'button:has-text("Choose file")',
+            'button:has-text("Browse")',
+            'button:has-text("Select files")'
+        ]
+
+        for selector in upload_button_selectors:
+            try:
+                upload_btn_locator = self.page.locator(selector)
+                count = await upload_btn_locator.count()
+                if count == 0:
+                    self.logger.debug(f"[{self.req_id}] 选择器 {selector} 未找到元素")
+                    continue
+
+                self.logger.info(f"[{self.req_id}] 找到上传按钮: {selector} (数量: {count})")
+
+                # 检查按钮是否可见和可点击
+                first_btn = upload_btn_locator.first
+                is_visible = await first_btn.is_visible()
+                is_enabled = await first_btn.is_enabled()
+
+                self.logger.info(f"[{self.req_id}] 按钮状态 - visible: {is_visible}, enabled: {is_enabled}")
+
+                if not is_enabled:
+                    self.logger.warning(f"[{self.req_id}] 按钮不可用，跳过: {selector}")
+                    continue
+
+                # 尝试两种方法：先监听再点击 vs 先点击再监听
+                success = await self._try_file_chooser_method1(first_btn, image_list, selector)
+                if success:
+                    return True
+
+                success = await self._try_file_chooser_method2(first_btn, image_list, selector)
+                if success:
+                    return True
+
+            except Exception as e:
+                self.logger.warning(f"[{self.req_id}] 使用选择器 {selector} 失败: {e}")
+
+        return False
+
+    async def _try_file_chooser_method1(self, button_locator, image_list, selector):
+        """方法1: 先监听文件选择器，再点击按钮"""
+        try:
+            self.logger.info(f"[{self.req_id}] 方法1 - 先监听再点击: {selector}")
+
+            async with self.page.expect_file_chooser(timeout=10000) as fc_info:
+                await button_locator.click()
+                self.logger.info(f"[{self.req_id}] 已点击按钮，等待文件选择器...")
+
+            file_chooser = await fc_info.value
+            self.logger.info(f"[{self.req_id}] ✅ 文件选择器已出现 (方法1)")
+
+            await file_chooser.set_files(image_list)
+            self.logger.info(f"[{self.req_id}] ✅ 已设置文件: {image_list}")
+
+            await asyncio.sleep(1.0)
+            return True
+
+        except Exception as e:
+            self.logger.debug(f"[{self.req_id}] 方法1失败: {e}")
+            return False
+
+    async def _try_file_chooser_method2(self, button_locator, image_list, selector):
+        """方法2: 先点击按钮，再尝试监听文件选择器"""
+        try:
+            self.logger.info(f"[{self.req_id}] 方法2 - 先点击再监听: {selector}")
+
+            # 先点击按钮
+            await button_locator.click()
+            self.logger.info(f"[{self.req_id}] 已点击按钮")
+
+            # 短暂等待
+            await asyncio.sleep(0.2)
+
+            # 再尝试监听文件选择器
+            async with self.page.expect_file_chooser(timeout=5000) as fc_info:
+                # 可能需要再次点击或者等待
+                pass
+
+            file_chooser = await fc_info.value
+            self.logger.info(f"[{self.req_id}] ✅ 文件选择器已出现 (方法2)")
+
+            await file_chooser.set_files(image_list)
+            self.logger.info(f"[{self.req_id}] ✅ 已设置文件: {image_list}")
+
+            await asyncio.sleep(1.0)
+            return True
+
+        except Exception as e:
+            self.logger.debug(f"[{self.req_id}] 方法2失败: {e}")
+            return False
+
+    async def _try_direct_file_input(self, image_list):
+        """直接查找文件输入元素 - 这是最可靠的方法"""
+        self.logger.info(f"[{self.req_id}] 尝试直接文件输入方法...")
+
+        try:
+            # 查找所有可能的文件输入元素
+            file_input_selectors = [
+                'input[type="file"]',
+                'input[accept*="image"]',
+                'input[accept*="file"]'
+            ]
+
+            all_file_inputs = []
+            for selector in file_input_selectors:
+                try:
+                    inputs = await self.page.locator(selector).all()
+                    all_file_inputs.extend(inputs)
+                except Exception:
+                    pass
+
+            if not all_file_inputs:
+                self.logger.info(f"[{self.req_id}] 未找到任何文件输入元素")
+                return False
+
+            self.logger.info(f"[{self.req_id}] 找到 {len(all_file_inputs)} 个文件输入元素")
+
+            for i, file_input in enumerate(all_file_inputs):
+                try:
+                    # 获取元素的详细信息
+                    is_visible = await file_input.is_visible()
+                    is_enabled = await file_input.is_enabled()
+
+                    # 获取accept属性
+                    accept_attr = ""
+                    try:
+                        accept_attr = await file_input.get_attribute('accept') or ""
+                    except Exception:
+                        pass
+
+                    # 获取元素的位置信息
+                    bounding_box = None
+                    try:
+                        bounding_box = await file_input.bounding_box()
+                    except Exception:
+                        pass
+
+                    self.logger.info(f"[{self.req_id}] 文件输入元素 {i}: visible={is_visible}, enabled={is_enabled}, accept='{accept_attr}', bbox={bounding_box}")
+
+                    # 尝试上传文件，即使元素不可见（很多文件输入都是隐藏的）
+                    if is_enabled:
+                        try:
+                            await file_input.set_input_files(image_list)
+                            self.logger.info(f"[{self.req_id}] ✅ 通过文件输入元素 {i} 上传成功")
+
+                            # 等待文件处理
+                            await asyncio.sleep(2.0)
+
+                            # 验证上传是否成功（检查是否有文件名显示等）
+                            if await self._verify_file_upload_success():
+                                return True
+                            else:
+                                self.logger.info(f"[{self.req_id}] 文件输入元素 {i} 上传验证失败，继续尝试其他元素")
+
+                        except Exception as upload_err:
+                            self.logger.debug(f"[{self.req_id}] 文件输入元素 {i} 上传失败: {upload_err}")
+
+                except Exception as e:
+                    self.logger.debug(f"[{self.req_id}] 检查文件输入元素 {i} 时出错: {e}")
+
+        except Exception as e:
+            self.logger.warning(f"[{self.req_id}] 直接文件输入方法失败: {e}")
+
+        return False
+
+    async def _verify_file_upload_success(self):
+        """验证文件上传是否成功 - 针对AI Studio优化"""
+        try:
+            # 检查AI Studio特定的上传成功指示器
+            ai_studio_success_indicators = [
+                # AI Studio可能显示上传的图片
+                'img[src*="blob:"]',  # 上传的图片通常会显示为blob URL
+                'img[src*="data:"]',  # 或者data URL
+
+                # AI Studio可能的文件显示元素
+                '.uploaded-image',
+                '.attachment-preview',
+                '[data-testid="uploaded-image"]',
+                '[data-testid="attachment"]',
+
+                # 通用的上传成功指示器
+                '.file-name',
+                '.uploaded-file',
+                '[data-testid="uploaded-file"]',
+                '.file-preview',
+                '.attachment',
+
+                # AI Studio输入区域可能的变化
+                'ms-prompt-input-wrapper img',  # 输入区域内的图片
+                '.prompt-input img',
+
+                # 可能的文件标签或芯片
+                'mat-chip',
+                '.file-chip',
+                '.attachment-chip'
+            ]
+
+            for indicator in ai_studio_success_indicators:
+                try:
+                    count = await self.page.locator(indicator).count()
+                    if count > 0:
+                        self.logger.info(f"[{self.req_id}] 发现上传成功指示器: {indicator} (count: {count})")
+
+                        # 对于图片，尝试获取更多信息
+                        if 'img' in indicator:
+                            try:
+                                img_src = await self.page.locator(indicator).first.get_attribute('src')
+                                if img_src:
+                                    self.logger.info(f"[{self.req_id}] 图片源: {img_src[:100]}...")
+                            except Exception:
+                                pass
+
+                        return True
+                except Exception:
+                    pass
+
+            # 检查输入区域是否有变化
+            try:
+                # 检查输入区域的子元素数量是否增加
+                input_wrapper = self.page.locator('ms-prompt-input-wrapper')
+                if await input_wrapper.count() > 0:
+                    child_count = await input_wrapper.locator('*').count()
+                    self.logger.debug(f"[{self.req_id}] 输入区域子元素数量: {child_count}")
+            except Exception:
+                pass
+
+            # 等待一下再检查
+            await asyncio.sleep(1.0)
+            return False
+
+        except Exception as e:
+            self.logger.debug(f"[{self.req_id}] 验证上传成功时出错: {e}")
+            return False
+
+    async def _try_drag_drop_upload(self, image_list):
+        """尝试拖拽上传"""
+        self.logger.info(f"[{self.req_id}] 尝试拖拽上传方法...")
+
+        try:
+            # 查找可能的拖拽区域
+            drop_zones = [
+                '[data-testid="drop-zone"]',
+                '.drop-zone',
+                '.upload-area',
+                'textarea',  # 有些网站支持直接拖拽到文本区域
+            ]
+
+            for zone_selector in drop_zones:
+                try:
+                    zone_locator = self.page.locator(zone_selector)
+                    count = await zone_locator.count()
+                    if count > 0:
+                        self.logger.info(f"[{self.req_id}] 尝试拖拽到: {zone_selector}")
+
+                        # 模拟文件拖拽
+                        await zone_locator.first.dispatch_event('dragover')
+                        await zone_locator.first.dispatch_event('drop', {
+                            'dataTransfer': {
+                                'files': image_list
+                            }
+                        })
+
+                        await asyncio.sleep(2.0)
+                        self.logger.info(f"[{self.req_id}] ✅ 拖拽上传尝试完成")
+                        return True
+
+                except Exception as e:
+                    self.logger.debug(f"[{self.req_id}] 拖拽到 {zone_selector} 失败: {e}")
+
+        except Exception as e:
+            self.logger.warning(f"[{self.req_id}] 拖拽上传方法失败: {e}")
+
+        return False
+
+    async def _handle_copyright_acknowledgement(self):
+        """处理版权确认"""
+        try:
+            acknow_selectors = [
+                'button[aria-label="Agree to the copyright acknowledgement"]',
+                'button:has-text("Agree")',
+                'button:has-text("I agree")',
+                'button:has-text("Accept")',
+                '[data-testid="copyright-agree"]'
+            ]
+
+            for selector in acknow_selectors:
+                try:
+                    acknow_btn_locator = self.page.locator(selector)
+                    count = await acknow_btn_locator.count()
+                    if count > 0:
+                        self.logger.info(f"[{self.req_id}] 找到版权确认按钮: {selector}")
+                        await acknow_btn_locator.first.click()
+                        self.logger.info(f"[{self.req_id}] ✅ 版权确认完成")
+                        return
+                except Exception as e:
+                    self.logger.debug(f"[{self.req_id}] 版权确认按钮 {selector} 点击失败: {e}")
+
+            self.logger.info(f"[{self.req_id}] 未找到版权确认按钮，可能不需要确认")
+
+        except Exception as e:
+            self.logger.warning(f"[{self.req_id}] 处理版权确认时出错: {e}")
