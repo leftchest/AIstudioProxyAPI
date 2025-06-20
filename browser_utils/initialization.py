@@ -401,41 +401,133 @@ async def _initialize_page_logic(browser: AsyncBrowser):
                     await save_error_snapshot("init_login_wait_fail")
                     logger.error(f"登录提示后未能检测到 AI Studio URL 或保存状态时出错: {wait_login_err}", exc_info=True)
                     raise RuntimeError(f"登录提示后未能检测到 AI Studio URL: {wait_login_err}") from wait_login_err
-        elif target_url_base not in current_url or "/prompts/" not in current_url:
+        # 检查是否是错误页面
+        elif any(error_code in current_url for error_code in ['/520', '/404', '/500', '/502', '/503']):
+            from .operations import save_error_snapshot
+            await save_error_snapshot("init_error_page")
+            logger.error(f"检测到错误页面: {current_url}")
+            logger.info("尝试重新导航到正确的页面...")
+
+            try:
+                # 尝试导航到正确的AI Studio页面
+                logger.info(f"尝试重新导航到: {target_full_url}")
+                await found_page.goto(target_full_url, timeout=30000)
+                await found_page.wait_for_load_state('domcontentloaded', timeout=15000)
+                current_url = found_page.url
+                logger.info(f"重新导航后的URL: {current_url}")
+
+                # 再次检查URL
+                if any(error_code in current_url for error_code in ['/520', '/404', '/500', '/502', '/503']):
+                    raise RuntimeError(f"重新导航后仍然是错误页面: {current_url}")
+
+            except Exception as nav_err:
+                logger.error(f"重新导航失败: {nav_err}")
+                raise RuntimeError(f"检测到错误页面且重新导航失败: {current_url}") from nav_err
+
+        elif target_url_base not in current_url or "prompts" not in current_url:
             from .operations import save_error_snapshot
             await save_error_snapshot("init_unexpected_page")
-            logger.error(f"初始导航后页面 URL 意外: {current_url}。期望包含 '{target_url_base}' 和 '/prompts/'。")
-            raise RuntimeError(f"初始导航后出现意外页面: {current_url}。")
+            logger.error(f"初始导航后页面 URL 意外: {current_url}。期望包含 '{target_url_base}' 和 'prompts'。")
+            logger.info(f"期望的完整URL: {target_full_url}")
+
+            # 尝试再次导航到正确页面
+            try:
+                logger.info(f"尝试导航到正确页面: {target_full_url}")
+                await found_page.goto(target_full_url, timeout=30000)
+                await found_page.wait_for_load_state('domcontentloaded', timeout=15000)
+                current_url = found_page.url
+                logger.info(f"重新导航后的URL: {current_url}")
+
+                # 再次检查
+                if target_url_base not in current_url or "prompts" not in current_url:
+                    raise RuntimeError(f"重新导航后仍然是意外页面: {current_url}")
+
+            except Exception as nav_err:
+                logger.error(f"重新导航到正确页面失败: {nav_err}")
+                raise RuntimeError(f"初始导航后出现意外页面且重新导航失败: {current_url}") from nav_err
         
         logger.info(f"-> 确认当前位于 AI Studio 对话页面: {current_url}")
+        logger.info(f"-> 期望的目标页面: {target_full_url}")
         await found_page.bring_to_front()
-        
+
+        # 等待页面完全加载
         try:
-            input_wrapper_locator = found_page.locator('ms-prompt-input-wrapper')
-            await expect_async(input_wrapper_locator).to_be_visible(timeout=35000)
-            await expect_async(found_page.locator(INPUT_SELECTOR)).to_be_visible(timeout=10000)
-            logger.info("-> ✅ 核心输入区域可见。")
-            
-            model_name_locator = found_page.locator('mat-select[data-test-ms-model-selector] div.model-option-content span.gmat-body-medium')
+            await found_page.wait_for_load_state('networkidle', timeout=10000)
+            logger.info("-> 页面网络空闲状态达成")
+        except Exception as load_err:
+            logger.warning(f"-> 等待网络空闲超时，继续初始化: {load_err}")
+        
+        # 增强的输入区域检查
+        input_found = False
+        input_selectors = [
+            'ms-prompt-input-wrapper',
+            'ms-prompt-input-wrapper ms-autosize-textarea textarea',
+            'textarea[placeholder*="Enter a prompt"]',
+            'textarea[aria-label*="prompt"]',
+            '.prompt-input',
+            '[data-testid="prompt-input"]'
+        ]
+
+        logger.info("-> 开始检查核心输入区域...")
+        for i, selector in enumerate(input_selectors):
             try:
-                model_name_on_page = await model_name_locator.first.inner_text(timeout=5000)
-                logger.info(f"-> 🤖 页面检测到的当前模型: {model_name_on_page}")
-            except PlaywrightAsyncError as e:
-                logger.error(f"获取模型名称时出错 (model_name_locator): {e}")
-                raise
-            
-            result_page_instance = found_page
-            result_page_ready = True
+                logger.info(f"-> 尝试选择器 {i+1}/{len(input_selectors)}: {selector}")
+                locator = found_page.locator(selector)
 
-            # 脚本注入已在上下文创建时完成，无需在此处重复注入
+                # 检查元素是否存在
+                count = await locator.count()
+                logger.info(f"   找到 {count} 个匹配元素")
 
-            logger.info(f"✅ 页面逻辑初始化成功。")
-            return result_page_instance, result_page_ready
-        except Exception as input_visible_err:
+                if count > 0:
+                    # 等待元素可见，使用较短的超时时间
+                    await expect_async(locator.first).to_be_visible(timeout=20000)
+                    logger.info(f"-> ✅ 输入区域可见 (选择器: {selector})")
+                    input_found = True
+                    break
+
+            except Exception as selector_err:
+                logger.debug(f"   选择器 {selector} 失败: {selector_err}")
+
+        if not input_found:
             from .operations import save_error_snapshot
             await save_error_snapshot("init_fail_input_timeout")
-            logger.error(f"页面初始化失败：核心输入区域未在预期时间内变为可见。最后的 URL 是 {found_page.url}", exc_info=True)
-            raise RuntimeError(f"页面初始化失败：核心输入区域未在预期时间内变为可见。最后的 URL 是 {found_page.url}") from input_visible_err
+            logger.error(f"页面初始化失败：所有输入区域选择器都失败。最后的 URL 是 {found_page.url}")
+
+            # 记录页面状态用于调试
+            try:
+                page_title = await found_page.title()
+                logger.error(f"页面标题: {page_title}")
+
+                # 检查是否有错误信息
+                error_selectors = ['.error-message', '.warning', '[role="alert"]']
+                for error_sel in error_selectors:
+                    try:
+                        error_count = await found_page.locator(error_sel).count()
+                        if error_count > 0:
+                            error_text = await found_page.locator(error_sel).first.text_content()
+                            logger.error(f"页面错误信息: {error_text}")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            raise RuntimeError(f"页面初始化失败：核心输入区域未在预期时间内变为可见。最后的 URL 是 {found_page.url}")
+
+        # 检查模型选择器（可选，不强制要求）
+        try:
+            model_name_locator = found_page.locator('mat-select[data-test-ms-model-selector] div.model-option-content span.gmat-body-medium')
+            model_name_on_page = await model_name_locator.first.inner_text(timeout=5000)
+            logger.info(f"-> 🤖 页面检测到的当前模型: {model_name_on_page}")
+        except Exception as model_err:
+            logger.warning(f"-> ⚠️ 获取模型名称失败，但继续初始化: {model_err}")
+
+        result_page_instance = found_page
+        result_page_ready = True
+
+        # 脚本注入已在上下文创建时完成，无需在此处重复注入
+
+        logger.info(f"✅ 页面逻辑初始化成功。")
+        return result_page_instance, result_page_ready
     except Exception as e_init_page:
         logger.critical(f"❌ 页面逻辑初始化期间发生严重意外错误: {e_init_page}", exc_info=True)
         if temp_context:
