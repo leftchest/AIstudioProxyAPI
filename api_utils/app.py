@@ -204,6 +204,10 @@ async def lifespan(app: FastAPI):
         else:
             raise RuntimeError("Failed to initialize browser/page, worker not started.")
 
+        # 启动文件清理服务
+        from api_utils.file_cleanup import start_file_cleanup
+        await start_file_cleanup()
+
         logger.info("Server startup complete.")
         server.is_initializing = False
         yield
@@ -213,6 +217,9 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(f"Application startup failed: {e}") from e
     finally:
         logger.info("Shutting down server...")
+        # 停止文件清理服务
+        from api_utils.file_cleanup import stop_file_cleanup
+        await stop_file_cleanup()
         await _shutdown_resources()
         restore_original_streams(initial_stdout, initial_stderr)
         restore_original_streams(*original_streams)
